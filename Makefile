@@ -43,6 +43,9 @@ CMD_AWK ?= awk
 CMD_BEAR ?= bear
 CMD_CAT ?= cat
 CMD_CLANG ?= clang
+CMD_BPF_CLANG ?= $(CMD_CLANG)
+CMD_LIBBPF_CC ?= $(CMD_CLANG)
+CMD_CGO_CC ?= $(CMD_LIBBPF_CC)
 CMD_CP ?= cp
 CMD_CUT ?= cut
 CMD_ERRCHECK ?= errcheck
@@ -399,6 +402,10 @@ BPF_VCPU = v2
 #
 
 OUTPUT_DIR = ./dist
+EVAL_GOENV = $(OUTPUT_DIR)/.eval_goenv
+LIBBPF_BUILD_MARK = $(OUTPUT_DIR)/.build_libbpf
+LIBBPF_FIX_MARK = $(OUTPUT_DIR)/.build_libbpf_fix
+BTFHUB_MD5 = $(OUTPUT_DIR)/.tracee.bpf.o.md5
 
 $(OUTPUT_DIR)::
 #
@@ -465,14 +472,14 @@ LIBBPF_DESTDIR = $(OUTPUT_DIR)/libbpf
 LIBBPF_OBJDIR = $(LIBBPF_DESTDIR)/obj
 LIBBPF_OBJ = $(LIBBPF_OBJDIR)/libbpf.a
 
-$(LIBBPF_OBJ):: .build_libbpf .build_libbpf_fix
+$(LIBBPF_OBJ):: $(LIBBPF_BUILD_MARK) $(LIBBPF_FIX_MARK)
 
-.build_libbpf:: \
-	$(LIBBPF_SRC) \
-	$(wildcard $(LIBBPF_SRC)/*.[ch]) \
-	| .checkver_$(CMD_CLANG)
+$(LIBBPF_BUILD_MARK):: \
+		$(LIBBPF_SRC) \
+		$(wildcard $(LIBBPF_SRC)/*.[ch]) \
+		| .checkver_$(CMD_CLANG)
 #
-	CC="$(CMD_CLANG)" \
+	CC="$(CMD_LIBBPF_CC)" \
 		CFLAGS="$(LIBBPF_CFLAGS)" \
 		LD_FLAGS="$(LIBBPF_LDFLAGS)" \
 		$(MAKE) \
@@ -490,7 +497,7 @@ $(LIBBPF_OBJ):: .build_libbpf .build_libbpf_fix
 
 LIBBPF_INCLUDE_UAPI = ./3rdparty/libbpf/include/uapi/linux
 
-.build_libbpf_fix:: .build_libbpf
+$(LIBBPF_FIX_MARK):: $(LIBBPF_BUILD_MARK)
 # copy all uapi headers to the correct location, since libbpf does not install them fully
 # see: https://github.com/aquasecurity/tracee/pull/4186
 	@$(CMD_CP) $(LIBBPF_INCLUDE_UAPI)/*.h $(LIBBPF_DESTDIR)/include/linux/
@@ -505,7 +512,7 @@ LIBBPF_INCLUDE_UAPI = ./3rdparty/libbpf/include/uapi/linux
 
 TRACEE_EBPF_CFLAGS = $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(CMD_PKGCONFIG) $(PKG_CONFIG_FLAG) --cflags $(LIB_BPF))
 
-.eval_goenv:: $(LIBBPF_OBJ)
+$(EVAL_GOENV):: $(LIBBPF_OBJ)
 #
 	@{
 ifeq ($(STATIC), 1)
@@ -515,7 +522,7 @@ ifeq ($(STATIC), 1)
 endif
 		$(eval GO_ENV_EBPF = )
 		$(eval GO_ENV_EBPF += GOOS=linux)
-		$(eval GO_ENV_EBPF += CC=$(CMD_CLANG))
+			$(eval GO_ENV_EBPF += CC=$(CMD_CGO_CC))
 		$(eval GO_ENV_EBPF += GOARCH=$(GO_ARCH))
 		$(eval GO_ENV_EBPF += GOFIPS140=$(GOFIPS140))
 		$(eval CUSTOM_CGO_CFLAGS := "$(TRACEE_EBPF_CFLAGS)")
@@ -571,7 +578,7 @@ $(OUTPUT_DIR)/lsm_support/%.bpf.o: \
 	$(LIBBPF_OBJ) \
 	| $(OUTPUT_DIR)/lsm_support
 #
-	$(CMD_CLANG) \
+		$(CMD_BPF_CLANG) \
 		$(BPF_DEBUG_FLAG) \
 		-D__TARGET_ARCH_$(LINUX_ARCH) \
 		-D__BPF_TRACING__ \
@@ -594,7 +601,7 @@ $(OUTPUT_DIR)/tracee.bpf.o:: \
 	$(TRACEE_EBPF_OBJ_SRC) \
 	$(TRACEE_EBPF_OBJ_HEADERS)
 #
-	$(CMD_CLANG) \
+	$(CMD_BPF_CLANG) \
 		$(BPF_DEBUG_FLAG) \
 		-D__TARGET_ARCH_$(LINUX_ARCH) \
 		-D__BPF_TRACING__ \
@@ -626,7 +633,7 @@ LSM_CHECK_SRC := $(shell find cmd/lsm_support_check -type f -name '*.go')
 $(OUTPUT_DIR)/lsm-check:: \
 	$(LSM_SUPPORT_OBJS) \
 	$(LSM_CHECK_SRC) \
-	| .eval_goenv \
+	| $(EVAL_GOENV) \
 	.checkver_$(CMD_GO) \
 	.checklib_$(LIB_BPF)
 #
@@ -667,9 +674,9 @@ TRACEE_PROTOS = $(filter-out $(TRACEE_PROTOS_NO_JSON),$(TRACEE_PROTOS_ALL))
 SH_BTFHUB = ./scripts/btfhub.sh
 
 .PHONY: btfhub
-btfhub:: .tracee.bpf.o.md5
+btfhub:: $(BTFHUB_MD5)
 
-.tracee.bpf.o.md5: \
+$(BTFHUB_MD5): \
 	$(OUTPUT_DIR)/tracee.bpf.o \
 	| .check_$(CMD_MD5)
 #
@@ -711,7 +718,7 @@ TRACEE_BUILD_DEPS = \
 	detectors/go.sum
 
 TRACEE_BUILD_ORDER_DEPS = \
-	.eval_goenv \
+	$(EVAL_GOENV) \
 	.checkver_$(CMD_GO) \
 	.checklib_$(LIB_BPF) \
 	btfhub \
@@ -796,7 +803,7 @@ signatures:: \
 
 $(OUTPUT_DIR)/signatures/builtin.so:: \
 	$(GOSIGNATURES_SRC) \
-	| .eval_goenv \
+	| $(EVAL_GOENV) \
 	.checkver_$(CMD_GO)
 #
 	$(GO_ENV_EBPF) $(CMD_GO) build \
@@ -829,7 +836,7 @@ evt:: $(OUTPUT_DIR)/evt
 
 $(OUTPUT_DIR)/evt:: \
 	$(EVT_SRC) \
-	| .eval_goenv \
+	| $(EVAL_GOENV) \
 	.checkver_$(CMD_GO) \
 #
 	$(CMD_GO) build \
@@ -922,7 +929,7 @@ clean-traceectl::
 .PHONY: test-unit
 test-unit:: \
 	$(if $(or $(PKG),$(TEST)),,test-types test-common) \
-	| .eval_goenv \
+		| $(EVAL_GOENV) \
 	.checkver_$(CMD_GO)
 #
 	@$(MAKE) embedded-dirs
@@ -996,7 +1003,7 @@ coverage-html:: test-unit
 #
 
 $(OUTPUT_DIR)/syscaller:: \
-	| .eval_goenv \
+	| $(EVAL_GOENV) \
 	.check_$(CMD_GO) \
 #
 	$(MAKE) embedded-dirs
@@ -1009,7 +1016,7 @@ $(OUTPUT_DIR)/syscaller:: \
 .PHONY: test-integration
 test-integration:: \
 	$(OUTPUT_DIR)/syscaller \
-	| .eval_goenv \
+	| $(EVAL_GOENV) \
 	.checkver_$(CMD_GO)
 #
 	@$(GO_ENV_EBPF) \
@@ -1033,7 +1040,7 @@ test-integration:: \
 
 .PHONY: test-compatibility
 test-compatibility:: \
-	| .eval_goenv \
+	| $(EVAL_GOENV) \
 	.checkver_$(CMD_GO)
 #
 	@$(MAKE) embedded-dirs
@@ -1058,7 +1065,7 @@ test-compatibility:: \
 
 .PHONY: test-upstream-libbpfgo
 test-upstream-libbpfgo:: \
-	| .eval_goenv \
+	| $(EVAL_GOENV) \
 	.checkver_$(CMD_GO)
 #
 	./tests/libbpfgo.sh $(GO_ENV_EBPF)
@@ -1069,7 +1076,7 @@ test-upstream-libbpfgo:: \
 
 .PHONY: test-performance
 test-performance:: \
-	| .eval_goenv \
+	| $(EVAL_GOENV) \
 	.checkver_$(CMD_GO)
 #
 	@$(MAKE) tracee
@@ -1169,7 +1176,7 @@ check-code::
 
 .PHONY: check-vet
 check-vet:: \
-	| .eval_goenv \
+	| $(EVAL_GOENV) \
 	.checkver_$(CMD_GO) \
 	.checklib_$(LIB_BPF)
 #
@@ -1185,7 +1192,7 @@ check-vet:: \
 
 .PHONY: check-staticcheck
 check-staticcheck:: \
-	| .eval_goenv \
+	| $(EVAL_GOENV) \
 	.checkver_$(CMD_GO) \
 	.checklib_$(LIB_BPF) \
 	.check_$(CMD_STATICCHECK)
@@ -1202,7 +1209,7 @@ check-staticcheck:: \
 
 .PHONY: check-err
 check-err:: \
-	| .eval_goenv \
+	| $(EVAL_GOENV) \
 	.checkver_$(CMD_GO) \
 	.checklib_$(LIB_BPF) \
 	.check_$(CMD_ERRCHECK)
@@ -1223,7 +1230,7 @@ check-err:: \
 
 .PHONY: check-vulncheck
 check-vulncheck:: \
-	| .eval_goenv \
+	| $(EVAL_GOENV) \
 	.checkver_$(CMD_GO) \
 	.checklib_$(LIB_BPF) \
 	.check_$(CMD_GOVULNCHECK)
