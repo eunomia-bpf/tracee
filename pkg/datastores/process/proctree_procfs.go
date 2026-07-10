@@ -150,6 +150,7 @@ func dealWithProc(pt *ProcessTree, givenPid int32) error {
 	nstgid := status.GetNsTgid()
 	nsppid := status.GetNsPPid()
 	start := stat.GetStartTime()
+	isKernelThread := pid == 2 || ppid == 2
 
 	// sanity checks
 	switch givenPid {
@@ -210,15 +211,18 @@ func dealWithProc(pt *ProcessTree, givenPid int32) error {
 	// Requires CAP_SYS_PTRACE to read exe symlink of other processes
 	var binPath string
 	var binErr error
-	caps := capabilities.GetInstance()
-	if caps != nil {
-		_ = caps.Specific(func() error {
+	if !isKernelThread {
+		if os.Getenv("BPFREJIT_INSIDE_RUNTIME_CONTAINER") == "1" {
 			binPath, binErr = proc.GetProcBinary(givenPid)
-			return nil
-		}, cap.SYS_PTRACE)
-	} else {
-		// Fallback: try without capability elevation (may work for same-user processes)
-		binPath, binErr = proc.GetProcBinary(givenPid)
+		} else if caps := capabilities.GetInstance(); caps != nil {
+			_ = caps.Specific(func() error {
+				binPath, binErr = proc.GetProcBinary(givenPid)
+				return nil
+			}, cap.SYS_PTRACE)
+		} else {
+			// Fallback: try without capability elevation (may work for same-user processes)
+			binPath, binErr = proc.GetProcBinary(givenPid)
+		}
 	}
 
 	if binErr != nil {
